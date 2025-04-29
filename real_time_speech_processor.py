@@ -6,6 +6,9 @@ from gtts import gTTS
 import os
 import platform
 import tempfile
+from flask import Flask, request, jsonify, send_file
+import io
+import base64
 
 class RealTimeSpeechProcessor:
     def __init__(self):
@@ -106,47 +109,52 @@ class RealTimeSpeechProcessor:
     def text_to_speech(self, text):
         """Convert text to speech and play it cross-platform."""
         if not text.strip():
-            return
+            return None
         
         try:
             tts = gTTS(text=text, lang='en')
             # Use a temporary file to save the audio
-            with tempfile.NamedTemporaryFile(delete=True, suffix=".mp3") as fp:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
                 tts.save(fp.name)
-                if platform.system() == "Windows":
-                    os.system(f'start {fp.name}')
-                elif platform.system() == "Darwin":  # macOS
-                    os.system(f'afplay {fp.name}')
-                else:  # Linux and others
-                    # Try to use mpg123 or play command
-                    if os.system(f"mpg123 {fp.name}") != 0:
-                        os.system(f"play {fp.name}")
+                fp.seek(0)
+                audio_bytes = fp.read()
+            os.unlink(fp.name)
+            return audio_bytes
         except Exception as e:
             print(f"TTS error: {str(e)}")
+            return None
 
-    def process_realtime(self):
-        """Main processing loop for real-time speech processing."""
-        print("\nStarting real-time processing. Press Ctrl+C to stop...")
-        self.list_input_devices()
-        try:
-            while True:
-                audio, sr = self.capture_audio(duration=3)
-                if audio is None:
-                    continue
-                
-                raw_text = self.speech_to_text(audio)
-                print(f"\nRaw transcription: {raw_text}")
-                
-                corrected_text = self.correct_text(raw_text)
-                print(f"Corrected transcription: {corrected_text}")
-                
-                self.text_to_speech(corrected_text)
-                
-        except KeyboardInterrupt:
-            print("\nProcessing stopped by user.")
-        except Exception as e:
-            print(f"Fatal error: {str(e)}")
+app = Flask(__name__)
+processor = RealTimeSpeechProcessor()
+
+@app.route('/api/transcribe', methods=['POST'])
+def transcribe():
+    if 'audio' not in request.files:
+        return jsonify({'error': 'No audio file provided'}), 400
+    audio_file = request.files['audio']
+    audio_bytes = audio_file.read()
+    # Convert bytes to numpy array
+    audio_np = np.frombuffer(audio_bytes, dtype=np.int16)
+    transcription = processor.speech_to_text(audio_np)
+    return jsonify({'transcription': transcription})
+
+@app.route('/api/correct', methods=['POST'])
+def correct():
+    data = request.get_json()
+    if not data or 'text' not in data:
+        return jsonify({'error': 'No text provided'}), 400
+    corrected_text = processor.correct_text(data['text'])
+    return jsonify({'corrected_text': corrected_text})
+
+@app.route('/api/speak', methods=['POST'])
+def speak():
+    data = request.get_json()
+    if not data or 'text' not in data:
+        return jsonify({'error': 'No text provided'}), 400
+    audio_bytes = processor.text_to_speech(data['text'])
+    if audio_bytes is None:
+        return jsonify({'error': 'Text to speech failed'}), 500
+    return send_file(io.BytesIO(audio_bytes), mimetype='audio/mpeg')
 
 if __name__ == "__main__":
-    processor = RealTimeSpeechProcessor()
-    processor.process_realtime()
+    app.run(host='0.0.0.0', port=8000)
